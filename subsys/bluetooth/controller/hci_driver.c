@@ -517,6 +517,26 @@ static int configure_supported_features(void)
 		}
 	}
 
+	err = sdc_support_periodic_adv_sync_transfer_receiver_central();
+	if (err) {
+		return -ENOTSUP;
+	}
+
+	err = sdc_support_periodic_adv_sync_transfer_receiver_peripheral();
+	if (err) {
+		return -ENOTSUP;
+	}
+
+	err = sdc_support_periodic_adv_sync_transfer_sender_central();
+	if (err) {
+		return -ENOTSUP;
+	}
+
+	err = sdc_support_periodic_adv_sync_transfer_sender_peripheral();
+	if (err) {
+		return -ENOTSUP;
+	}
+
 	if (IS_ENABLED(CONFIG_BT_CTLR_PHY_CODED)) {
 		err = sdc_support_le_coded_phy();
 		if (err) {
