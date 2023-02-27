@@ -1,0 +1,20 @@
+/ {
+  zephyr,user {
+    coex-pta-grant-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;
+  };
+
+  nrf_radio_coex: radio_coex_one_wire {
+    status = "okay";
+    compatible = "sdc-radio-coex-one-wire";
+    grant-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+    concurrency-mode = <0>;
+  };
+};
+
+&radio {
+  coex = <&nrf_radio_coex>;
+};
+
+&gpiote {
+  interrupts = < 6 2 >; /* Highest priority below the zero-latency interrupts */
+};
