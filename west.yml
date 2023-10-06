@@ -39,6 +39,8 @@ manifest:
       url-base: https://github.com/BabbleSim
     - name: bosch
       url-base: https://github.com/boschsensortec
+    - name: sean
+      url-base: https://github.com/sean-madigan
 
   # If not otherwise specified, the projects below should be obtained
   # from the ncs remote.
@@ -60,8 +62,9 @@ manifest:
     # https://developer.nordicsemi.com/nRF_Connect_SDK/doc/latest/zephyr/introduction/index.html
     # https://developer.nordicsemi.com/nRF_Connect_SDK/doc/latest/zephyr/guides/modules.html
     - name: zephyr
+      remote: sean
       repo-path: sdk-zephyr
-      revision: be22816677ec99e6deb93b9977c403b625ab0448
+      revision: test_uart_async_ebq
       import:
         # In addition to the zephyr repository itself, NCS also
         # imports the contents of zephyr/west.yml at the above
