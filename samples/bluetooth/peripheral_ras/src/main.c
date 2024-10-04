@@ -79,14 +79,8 @@ static void auth_cancel(struct bt_conn *conn)
 	printk("Pairing cancelled: %s\n", addr);
 }
 
-static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
-{
-	printk("Pairing key is %06d.\n", passkey);
-}
-
 static struct bt_conn_auth_cb auth_cb_display = {
 	.cancel = auth_cancel,
-	.passkey_display = auth_passkey_display,
 };
 
 int main(void)

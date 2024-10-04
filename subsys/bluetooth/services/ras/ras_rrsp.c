@@ -320,6 +320,16 @@ int rrsp_ondemand_rd_notify_or_indicate(struct bt_conn *conn, struct net_buf_sim
 	__ASSERT_NO_MSG(attr);
 
 	if (bt_gatt_is_subscribed(conn, attr, BT_GATT_CCC_NOTIFY)) {
+		struct bt_gatt_notify_params params = {0};
+
+		params.attr = attr;
+		params.uuid = NULL;
+		params.data = buf->data;
+		params.len = buf->len;
+		params.func = ondemand_rd_notify_sent_cb;
+
+		return bt_gatt_notify_cb(conn, &params);
+	} else if(bt_gatt_is_subscribed(conn, attr, BT_GATT_CCC_INDICATE)) {
 		struct bt_gatt_indicate_params params = {0};
 
 		params.attr = attr;
@@ -330,16 +340,6 @@ int rrsp_ondemand_rd_notify_or_indicate(struct bt_conn *conn, struct net_buf_sim
 		params.destroy = NULL;
 
 		return bt_gatt_indicate(conn, &params);
-	} else if(bt_gatt_is_subscribed(conn, attr, BT_GATT_CCC_INDICATE)) {
-		struct bt_gatt_notify_params params = {0};
-
-		params.attr = attr;
-		params.uuid = NULL;
-		params.data = buf->data;
-		params.len = buf->len;
-		params.func = ondemand_rd_notify_sent_cb;
-
-		return bt_gatt_notify_cb(conn, &params);
 	} else {
 		return -EINVAL;
 	}
