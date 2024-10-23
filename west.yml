@@ -41,6 +41,8 @@ manifest:
       url-base: https://github.com/boschsensortec
     - name: eembc
       url-base: https://github.com/eembc
+    - name: sean
+      url-base: https://github.com/sean-madigan
 
   # If not otherwise specified, the projects below should be obtained
   # from the ncs remote.
@@ -70,9 +72,10 @@ manifest:
     #
     # https://developer.nordicsemi.com/nRF_Connect_SDK/doc/latest/zephyr/introduction/index.html
     # https://developer.nordicsemi.com/nRF_Connect_SDK/doc/latest/zephyr/guides/modules.html
-    - name: zephyr
+    - name: sdk-zephyr
+      remote: sean
       repo-path: sdk-zephyr
-      revision: 8ceab93c866d584201621703dee15a77107e7363
+      revision: grtc_clock_select
       import:
         # In addition to the zephyr repository itself, NCS also
         # imports the contents of zephyr/west.yml at the above
