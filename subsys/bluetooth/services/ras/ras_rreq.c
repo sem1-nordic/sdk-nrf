@@ -630,3 +630,43 @@ int bt_ras_rreq_cp_get_ranging_data(struct bt_conn *conn, struct net_buf_simple 
 
 	return 0;
 }
+
+void bt_ras_rreq_rd_subevent_data_parse(
+	struct net_buf_simple *ranging_data_buf,
+	bool (*subevent_header_cb)(struct ras_subevent_header *subevent_header, void *user_data),
+	bool (*step_data_cb)(struct ras_rd_cs_subevent_step *step, uint16_t *step_data_length,
+			     void *user_data),
+	void *user_data)
+{
+	if (!ranging_data_buf) {
+		LOG_INF("Tried to parse empty step data.");
+		return;
+	}
+
+	while (ranging_data_buf->len >= sizeof(struct ras_subevent_header)) {
+		struct ras_subevent_header *subevent_header_data = net_buf_simple_pull_mem(
+			ranging_data_buf, sizeof(struct ras_subevent_header));
+
+		if (subevent_header_data->num_steps_reported == 0 || ranging_data_buf->len == 0) {
+			return;
+		}
+
+		if (subevent_header_cb && !subevent_header_cb(subevent_header_data, user_data)) {
+			return;
+		}
+
+		for (uint8_t i = 0; i < subevent_header_data->num_steps_reported; i++) {
+			struct ras_rd_cs_subevent_step step;
+			step.mode = net_buf_simple_pull_u8(ranging_data_buf);
+
+			step.data = ranging_data_buf->data;
+			uint16_t step_data_length;
+
+			if (step_data_cb && !step_data_cb(&step, &step_data_length, user_data)) {
+				return;
+			}
+
+			net_buf_simple_pull(ranging_data_buf, step_data_length);
+		}
+	}
+}

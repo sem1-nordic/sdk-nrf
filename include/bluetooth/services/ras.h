@@ -127,6 +127,14 @@ struct ras_rd_buffer {
 	} procedure;
 };
 
+/** Subevent result step */
+struct ras_rd_cs_subevent_step {
+	/** CS step mode. */
+	uint8_t mode;
+	/** Pointer to role- and mode-specific information. */
+	const uint8_t *data;
+};
+
 /* Ranging service API */
 
 int bt_ras_rrsp_init(void);
@@ -189,6 +197,12 @@ void bt_ras_rreq_free(struct bt_conn *conn);
 int bt_ras_rreq_on_demand_ranging_data_subscribe_all(
 	struct bt_conn *conn, bt_ras_rreq_rd_ready_cb_t rd_ready_cb,
 	bt_ras_rreq_rd_overwritten_cb_t rd_overwritten_cb);
+
+
+void bt_ras_rreq_rd_subevent_data_parse(struct net_buf_simple *ranging_data_buf,
+			      bool (*func1)(struct ras_subevent_header *subevent_header, void *user_data),
+			      bool (*func)(struct ras_rd_cs_subevent_step *step, uint16_t *step_data_length, void *user_data),
+			      void *user_data);
 
 #ifdef __cplusplus
 }
