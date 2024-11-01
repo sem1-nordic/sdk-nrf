@@ -11,6 +11,8 @@
 #include <zephyr/bluetooth/cs.h>
 #include <zephyr/bluetooth/att.h>
 #include <zephyr/bluetooth/gatt.h>
+#include <bluetooth/services/ras.h>
+#include <bluetooth/gatt_dm.h>
 
 static K_SEM_DEFINE(sem_remote_capabilities_obtained, 0, 1);
 static K_SEM_DEFINE(sem_config_created, 0, 1);
@@ -18,70 +20,53 @@ static K_SEM_DEFINE(sem_cs_security_enabled, 0, 1);
 static K_SEM_DEFINE(sem_procedure_done, 0, 1);
 static K_SEM_DEFINE(sem_connected, 0, 1);
 static K_SEM_DEFINE(sem_discovered, 0, 1);
-static K_SEM_DEFINE(sem_written, 0, 1);
 static K_SEM_DEFINE(sem_data_received, 0, 1);
+static K_SEM_DEFINE(rd_ready_sem, 0, 1);
+static K_SEM_DEFINE(pairing_complete_sem, 0, 1);
 
 #define CS_CONFIG_ID      0
 #define NUM_MODE_0_STEPS  1
 #define NAME_LEN          30
 #define STEP_DATA_BUF_LEN 512 /* Maximum GATT characteristic length */
 
-void estimate_distance(uint8_t *local_steps, uint16_t local_steps_len, uint8_t *peer_steps,
-		       uint16_t peer_steps_len, uint8_t n_ap, enum bt_conn_le_cs_role role);
-static ssize_t on_attr_write_cb(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-				const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
-static uint16_t step_data_attr_handle;
+void estimate_distance(struct net_buf_simple * local_steps, struct net_buf_simple * peer_steps,
+		       uint8_t n_ap, enum bt_conn_le_cs_role role);
 static struct bt_conn *connection;
 static enum bt_conn_le_cs_role role_selection;
 static uint8_t n_ap;
 static uint8_t latest_num_steps_reported;
-static uint16_t latest_step_data_len;
-static uint8_t latest_local_steps[STEP_DATA_BUF_LEN];
-static uint8_t latest_peer_steps[STEP_DATA_BUF_LEN];
 
-static struct bt_uuid_128 step_data_char_uuid =
-	BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x87654321, 0x4567, 0x2389, 0x1254, 0xf67f9fedcba8));
-static const struct bt_uuid_128 step_data_svc_uuid =
-	BT_UUID_INIT_128(BT_UUID_128_ENCODE(0x87654321, 0x4567, 0x2389, 0x1254, 0xf67f9fedcba9));
-static struct bt_gatt_attr gatt_attributes[] = {
-	BT_GATT_PRIMARY_SERVICE(&step_data_svc_uuid),
-	BT_GATT_CHARACTERISTIC(&step_data_char_uuid.uuid, BT_GATT_CHRC_WRITE,
-			       BT_GATT_PERM_WRITE | BT_GATT_PERM_PREPARE_WRITE, NULL,
-			       on_attr_write_cb, NULL),
-};
-static struct bt_gatt_service step_data_gatt_service = BT_GATT_SERVICE(gatt_attributes);
-
-static ssize_t on_attr_write_cb(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-				const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
-{
-	if (flags & BT_GATT_WRITE_FLAG_PREPARE) {
-		return 0;
-	}
-
-	if (offset) {
-		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
-	}
-
-	if (len != sizeof(latest_local_steps)) {
-		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
-	}
-
-	if (flags & BT_GATT_WRITE_FLAG_EXECUTE) {
-		uint8_t *data = (uint8_t *)buf;
-
-		memcpy(latest_peer_steps, &data[offset], len);
-		k_sem_give(&sem_data_received);
-	}
-
-	__ASSERT(role_selection == BT_CONN_LE_CS_ROLE_INITIATOR, "Unexpected GATT write cb");
-
-	return len;
-}
+NET_BUF_SIMPLE_DEFINE_STATIC(latest_local_steps, 5500);
+NET_BUF_SIMPLE_DEFINE_STATIC(latest_peer_steps, 5500);
+static uint16_t most_recent_ranging_counter;
 
 static const char sample_str[] = "CS Sample";
 static const struct bt_data ad[] = {
 	BT_DATA(BT_DATA_NAME_COMPLETE, "CS Sample", sizeof(sample_str) - 1),
 };
+
+static void pairing_complete(struct bt_conn *conn, bool bonded)
+{
+	char addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
+	printk("Pairing completed: %s, bonded: %d\n", addr, bonded);
+	k_sem_give(&pairing_complete_sem);
+}
+
+static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
+{
+	char addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
+	printk("Pairing failed conn: %s, reason %d %s\n", addr, reason,
+	       bt_security_err_to_str(reason));
+}
+
+static struct bt_conn_auth_info_cb conn_auth_info_callbacks = {.pairing_complete = pairing_complete,
+							       .pairing_failed = pairing_failed};
 
 static void subevent_result_cb(struct bt_conn *conn, struct bt_conn_le_cs_subevent_result *result)
 {
@@ -89,10 +74,10 @@ static void subevent_result_cb(struct bt_conn *conn, struct bt_conn_le_cs_subeve
 	n_ap = result->header.num_antenna_paths;
 
 	if (result->step_data_buf) {
-		if (result->step_data_buf->len <= STEP_DATA_BUF_LEN) {
-			memcpy(latest_local_steps, result->step_data_buf->data,
-			       result->step_data_buf->len);
-			latest_step_data_len = result->step_data_buf->len;
+		if (result->step_data_buf->len <= net_buf_simple_tailroom(&latest_local_steps)) {
+			uint16_t len = result->step_data_buf->len;
+			uint8_t *step_data = net_buf_simple_pull_mem(result->step_data_buf, len);
+			net_buf_simple_add_mem(&latest_local_steps, step_data, len);
 		} else {
 			printk("Not enough memory to store step data. (%d > %d)\n",
 			       result->step_data_buf->len, STEP_DATA_BUF_LEN);
@@ -105,10 +90,16 @@ static void subevent_result_cb(struct bt_conn *conn, struct bt_conn_le_cs_subeve
 	}
 }
 
-static void mtu_exchange_cb(struct bt_conn *conn, uint8_t err,
-			    struct bt_gatt_exchange_params *params)
+void ranging_data_get_complete_cb(int err, uint16_t ranging_counter)
 {
-	printk("MTU exchange %s (%u)\n", err == 0U ? "success" : "failed", bt_gatt_get_mtu(conn));
+	if (err) {
+		printk("Error %d, when getting ranging data with ranging counter %d\n", err,
+		       ranging_counter);
+	} else {
+		printk("Ranging data get completed for ranging counter %d\n", ranging_counter);
+	}
+
+	k_sem_give(&sem_data_received);
 }
 
 static void connected_cb(struct bt_conn *conn, uint8_t err)
@@ -127,13 +118,6 @@ static void connected_cb(struct bt_conn *conn, uint8_t err)
 
 	if (role_selection == BT_CONN_LE_CS_ROLE_REFLECTOR) {
 		connection = bt_conn_ref(conn);
-	}
-
-	static struct bt_gatt_exchange_params mtu_exchange_params = {.func = mtu_exchange_cb};
-
-	err = bt_gatt_exchange_mtu(connection, &mtu_exchange_params);
-	if (err) {
-		printk("%s: MTU exchange failed (err %d)", __func__, err);
 	}
 
 	k_sem_give(&sem_connected);
@@ -228,43 +212,57 @@ static void device_found(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 	}
 }
 
-static uint8_t discover_func(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-			     struct bt_gatt_discover_params *params)
+static void discovery_completed_cb(struct bt_gatt_dm *dm, void *context)
 {
-	struct bt_gatt_chrc *chrc;
-	char str[BT_UUID_STR_LEN];
+	int err;
 
-	printk("Discovery: attr %p\n", attr);
+	printk("The discovery procedure succeeded\n");
 
-	if (!attr) {
-		return BT_GATT_ITER_STOP;
+	struct bt_conn *conn = bt_gatt_dm_conn_get(dm);
+
+	bt_gatt_dm_data_print(dm);
+
+	err = bt_ras_rreq_alloc_and_assign_handles(dm, conn);
+	if (err) {
+		printk("RAS RREQ alloc init failed, err %d\n", err);
 	}
 
-	chrc = (struct bt_gatt_chrc *)attr->user_data;
-
-	bt_uuid_to_str(chrc->uuid, str, sizeof(str));
-	printk("UUID %s\n", str);
-
-	if (!bt_uuid_cmp(chrc->uuid, &step_data_char_uuid.uuid)) {
-		step_data_attr_handle = chrc->value_handle;
-
-		printk("Found expected UUID\n");
-
-		k_sem_give(&sem_discovered);
+	err = bt_gatt_dm_data_release(dm);
+	if (err) {
+		printk("Could not release the discovery data, err %d\n", err);
 	}
 
-	return BT_GATT_ITER_STOP;
+	k_sem_give(&sem_discovered);
 }
 
-static void write_func(struct bt_conn *conn, uint8_t err, struct bt_gatt_write_params *params)
+static void discovery_service_not_found_cb(struct bt_conn *conn, void *context)
 {
-	if (err) {
-		printk("Write failed (err %d)\n", err);
+	printk("The service could not be found during the discovery, disconnecting\n");
+	bt_conn_disconnect(connection, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+}
 
-		return;
-	}
+static void discovery_error_found_cb(struct bt_conn *conn, int err, void *context)
+{
+	printk("The discovery procedure failed, err %d\n", err);
+	bt_conn_disconnect(connection, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+}
 
-	k_sem_give(&sem_written);
+static struct bt_gatt_dm_cb discovery_cb = {
+	.completed = discovery_completed_cb,
+	.service_not_found = discovery_service_not_found_cb,
+	.error_found = discovery_error_found_cb,
+};
+
+static void ranging_data_ready_cb(struct bt_conn *conn, uint16_t ranging_counter)
+{
+	printk("Ranging data ready %i\n", ranging_counter);
+	most_recent_ranging_counter = ranging_counter;
+	k_sem_give(&rd_ready_sem);
+}
+
+static void ranging_data_overwritten_cb(struct bt_conn *conn, uint16_t ranging_counter)
+{
+	printk("Ranging data overwritten %i\n", ranging_counter);
 }
 
 BT_CONN_CB_DEFINE(conn_cb) = {
@@ -280,12 +278,16 @@ BT_CONN_CB_DEFINE(conn_cb) = {
 int main(void)
 {
 	int err;
-	struct bt_gatt_discover_params discover_params;
-	struct bt_gatt_write_params write_params;
 
 	console_init();
 
 	printk("Starting Channel Sounding Demo\n");
+
+	err = bt_conn_auth_info_cb_register(&conn_auth_info_callbacks);
+	if (err) {
+		printk("Failed to register authorization info callbacks.\n");
+		return 0;
+	}
 
 	/* Initialize the Bluetooth Subsystem */
 	err = bt_enable(NULL);
@@ -315,18 +317,18 @@ int main(void)
 	}
 
 	if (role_selection == BT_CONN_LE_CS_ROLE_INITIATOR) {
-		err = bt_gatt_service_register(&step_data_gatt_service);
-		if (err) {
-			printk("bt_gatt_service_register() returned err %d\n", err);
-			return 0;
-		}
-
 		err = bt_le_scan_start(BT_LE_SCAN_ACTIVE_CONTINUOUS, device_found);
 		if (err) {
 			printk("Scanning failed to start (err %d)\n", err);
 			return 0;
 		}
 	} else {
+		err = bt_ras_rrsp_init();
+		if (err) {
+			printk("Error occurred when initializing RAS RRSP service (err %d)\n", err);
+			return 0;
+		}
+
 		err = bt_le_adv_start(BT_LE_ADV_PARAM(BIT(0) | BIT(1), BT_GAP_ADV_FAST_INT_MIN_1,
 						      BT_GAP_ADV_FAST_INT_MAX_1, NULL),
 				      ad, ARRAY_SIZE(ad), NULL, 0);
@@ -350,14 +352,8 @@ int main(void)
 		printk("Failed to configure default CS settings (err %d)\n", err);
 	}
 
-	if (role_selection == BT_CONN_LE_CS_ROLE_REFLECTOR) {
-		discover_params.uuid = &step_data_char_uuid.uuid;
-		discover_params.func = discover_func;
-		discover_params.start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE;
-		discover_params.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
-		discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
-
-		err = bt_gatt_discover(connection, &discover_params);
+	if (role_selection == BT_CONN_LE_CS_ROLE_INITIATOR) {
+		err = bt_gatt_dm_start(connection, BT_UUID_RANGING_SERVICE, &discovery_cb, NULL);
 		if (err) {
 			printk("Discovery failed (err %d)\n", err);
 			return 0;
@@ -368,14 +364,17 @@ int main(void)
 			printk("Timed out during GATT discovery\n");
 			return 0;
 		}
-	}
 
-	if (role_selection == BT_CONN_LE_CS_ROLE_INITIATOR) {
-		err = bt_conn_set_security(connection, BT_SECURITY_L2);
+		err = bt_ras_rreq_on_demand_ranging_data_subscribe_all(connection, ranging_data_ready_cb,
+							       ranging_data_overwritten_cb);
 		if (err) {
-			printk("Failed to encrypt connection (err %d)\n", err);
+			printk("RAS RREQ On-demand ranging data subscribe all failed, err %d\n", err);
 			return 0;
 		}
+
+		printk("Subscribed\n");
+
+		k_sem_take(&pairing_complete_sem, K_FOREVER);
 
 		err = bt_le_cs_read_remote_supported_capabilities(connection);
 		if (err) {
@@ -383,7 +382,11 @@ int main(void)
 			return 0;
 		}
 
+		printk("Waiting for capabilities\n");
+
 		k_sem_take(&sem_remote_capabilities_obtained, K_FOREVER);
+
+		printk("Remote capabilities obtained\n");
 
 		struct bt_le_cs_create_config_params config_params = {
 			.id = CS_CONFIG_ID,
@@ -438,6 +441,8 @@ int main(void)
 			.snr_control_reflector = BT_LE_CS_REFLECTOR_SNR_CONTROL_NOT_USED,
 		};
 
+		printk("Setting CS procedure params\n");
+
 		err = bt_le_cs_set_procedure_parameters(connection, &procedure_params);
 		if (err) {
 			printk("Failed to set procedure parameters (err %d)\n", err);
@@ -449,6 +454,8 @@ int main(void)
 			.enable = 1,
 		};
 
+		printk("Starting CS procedure\n");
+
 		err = bt_le_cs_procedure_enable(connection, &params);
 		if (err) {
 			printk("Failed to enable CS procedures (err %d)\n", err);
@@ -457,40 +464,33 @@ int main(void)
 	}
 
 	while (true) {
+		printk("Waiting for procedure done\n");
+
 		k_sem_take(&sem_procedure_done, K_FOREVER);
 
-		if (role_selection == BT_CONN_LE_CS_ROLE_REFLECTOR) {
-			write_params.func = write_func;
-			write_params.handle = step_data_attr_handle;
-			write_params.length = STEP_DATA_BUF_LEN;
-			write_params.data = &latest_local_steps[0];
-			write_params.offset = 0;
-
-			err = bt_gatt_write(connection, &write_params);
-			if (err) {
-				printk("Write failed (err %d)\n", err);
-				return 0;
-			}
-
-			err = k_sem_take(&sem_written, K_SECONDS(10));
-			if (err) {
-				printk("Timed out during GATT write\n");
-				return 0;
-			}
-		}
-
+		printk("Procedure done\n");
 		if (role_selection == BT_CONN_LE_CS_ROLE_INITIATOR) {
+			printk("Waiting for RD ready\n");
+			k_sem_take(&rd_ready_sem, K_FOREVER);
+
+			printk("Requesting RD\n");
+			err = bt_ras_rreq_cp_get_ranging_data(connection, &latest_peer_steps,
+						      most_recent_ranging_counter,
+						      ranging_data_get_complete_cb);
+			if (err) {
+				printk("Get ranging data, err %d\n", err);
+			}
+
+			printk("Waiting for RD\n");
 			k_sem_take(&sem_data_received, K_FOREVER);
+			printk("RD received\n");
 
 			estimate_distance(
-				latest_local_steps, latest_step_data_len, latest_peer_steps,
-				latest_step_data_len -
-					NUM_MODE_0_STEPS *
-						(sizeof(struct
-							bt_hci_le_cs_step_data_mode_0_initiator) -
-						 sizeof(struct
-							bt_hci_le_cs_step_data_mode_0_reflector)),
+				&latest_local_steps, &latest_peer_steps,
 				n_ap, role_selection);
+
+			net_buf_simple_reset(&latest_local_steps);
+			net_buf_simple_reset(&latest_peer_steps);
 		}
 	}
 

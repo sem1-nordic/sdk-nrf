@@ -406,13 +406,7 @@ int main(void)
 		k_sem_take(&sem_connected, K_FOREVER);
 
 		if (role_selection == BT_CONN_LE_CS_ROLE_REFLECTOR) {
-			discover_params.uuid = &step_data_char_uuid.uuid;
-			discover_params.func = discover_func;
-			discover_params.start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE;
-			discover_params.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
-			discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
-
-			err = bt_gatt_discover(connection, &discover_params);
+			err = bt_gatt_dm_start(conn, BT_UUID_RANGING_SERVICE, &discovery_cb, NULL);
 			if (err) {
 				printk("Discovery failed (err %d)\n", err);
 				return 0;

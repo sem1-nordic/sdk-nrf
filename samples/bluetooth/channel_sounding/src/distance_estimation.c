@@ -4,8 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "zephyr/bluetooth/hci_types.h"
 #include <math.h>
 #include <zephyr/bluetooth/cs.h>
+#include <bluetooth/services/ras.h>
 
 #define CS_FREQUENCY_MHZ(ch)    (2402u + 1u * (ch))
 #define CS_FREQUENCY_HZ(ch)     (CS_FREQUENCY_MHZ(ch) * 1000000.0f)
@@ -32,7 +34,6 @@ static struct iq_sample_and_channel mode_2_data[MAX_NUM_SAMPLES];
 static struct rtt_timing mode_1_data[MAX_NUM_SAMPLES];
 
 struct processing_context {
-	bool local_steps;
 	uint8_t mode_1_data_index;
 	uint8_t mode_2_data_index;
 	uint8_t n_ap;
@@ -169,7 +170,7 @@ static float estimate_distance_using_time_of_flight(uint8_t n_samples)
 	return tof_mean_ns * SPEED_OF_LIGHT_NM_PER_S;
 }
 
-static bool process_step_data(struct bt_le_cs_subevent_step *step, void *user_data)
+static bool process_local_step_data(struct bt_le_cs_subevent_step *step, void *user_data)
 {
 	struct processing_context *context = (struct processing_context *)user_data;
 
@@ -177,47 +178,26 @@ static bool process_step_data(struct bt_le_cs_subevent_step *step, void *user_da
 		struct bt_hci_le_cs_step_data_mode_2 *step_data =
 			(struct bt_hci_le_cs_step_data_mode_2 *)step->data;
 
-		if (context->local_steps) {
-			for (uint8_t i = 0; i < (context->n_ap + 1); i++) {
-				if (step_data->tone_info[i].extension_indicator !=
-				    BT_HCI_LE_CS_NOT_TONE_EXT_SLOT) {
-					continue;
-				}
-
-				mode_2_data[context->mode_2_data_index].channel = step->channel;
-				mode_2_data[context->mode_2_data_index].antenna_permutation =
-					step_data->antenna_permutation_index;
-				mode_2_data[context->mode_2_data_index].local_iq_sample =
-					bt_le_cs_parse_pct(
-						step_data->tone_info[i].phase_correction_term);
-				if (step_data->tone_info[i].quality_indicator ==
-					    BT_HCI_LE_CS_TONE_QUALITY_LOW ||
-				    step_data->tone_info[i].quality_indicator ==
-					    BT_HCI_LE_CS_TONE_QUALITY_UNAVAILABLE) {
-					mode_2_data[context->mode_2_data_index].failed = true;
-				}
-
-				context->mode_2_data_index++;
+		for (uint8_t i = 0; i < (context->n_ap + 1); i++) {
+			if (step_data->tone_info[i].extension_indicator !=
+					BT_HCI_LE_CS_NOT_TONE_EXT_SLOT) {
+				continue;
 			}
-		} else {
-			for (uint8_t i = 0; i < (context->n_ap + 1); i++) {
-				if (step_data->tone_info[i].extension_indicator !=
-				    BT_HCI_LE_CS_NOT_TONE_EXT_SLOT) {
-					continue;
-				}
 
-				mode_2_data[context->mode_2_data_index].peer_iq_sample =
-					bt_le_cs_parse_pct(
-						step_data->tone_info[i].phase_correction_term);
-				if (step_data->tone_info[i].quality_indicator ==
-					    BT_HCI_LE_CS_TONE_QUALITY_LOW ||
-				    step_data->tone_info[i].quality_indicator ==
-					    BT_HCI_LE_CS_TONE_QUALITY_UNAVAILABLE) {
-					mode_2_data[context->mode_2_data_index].failed = true;
-				}
-
-				context->mode_2_data_index++;
+			mode_2_data[context->mode_2_data_index].channel = step->channel;
+			mode_2_data[context->mode_2_data_index].antenna_permutation =
+				step_data->antenna_permutation_index;
+			mode_2_data[context->mode_2_data_index].local_iq_sample =
+				bt_le_cs_parse_pct(
+					step_data->tone_info[i].phase_correction_term);
+			if (step_data->tone_info[i].quality_indicator ==
+				    BT_HCI_LE_CS_TONE_QUALITY_LOW ||
+			    step_data->tone_info[i].quality_indicator ==
+				    BT_HCI_LE_CS_TONE_QUALITY_UNAVAILABLE) {
+				mode_2_data[context->mode_2_data_index].failed = true;
 			}
+
+			context->mode_2_data_index++;
 		}
 	} else if (step->mode == BT_HCI_OP_LE_CS_MAIN_MODE_1) {
 		struct bt_hci_le_cs_step_data_mode_1 *step_data =
@@ -230,22 +210,12 @@ static bool process_step_data(struct bt_le_cs_subevent_step *step, void *user_da
 			mode_1_data[context->mode_1_data_index].failed = true;
 		}
 
-		if (context->local_steps) {
-			if (context->role == BT_CONN_LE_CS_ROLE_INITIATOR) {
-				mode_1_data[context->mode_1_data_index].toa_tod_initiator =
-					step_data->toa_tod_initiator;
-			} else if (context->role == BT_CONN_LE_CS_ROLE_REFLECTOR) {
-				mode_1_data[context->mode_1_data_index].tod_toa_reflector =
-					step_data->tod_toa_reflector;
-			}
-		} else {
-			if (context->role == BT_CONN_LE_CS_ROLE_INITIATOR) {
-				mode_1_data[context->mode_1_data_index].tod_toa_reflector =
-					step_data->tod_toa_reflector;
-			} else if (context->role == BT_CONN_LE_CS_ROLE_REFLECTOR) {
-				mode_1_data[context->mode_1_data_index].toa_tod_initiator =
-					step_data->toa_tod_initiator;
-			}
+		if (context->role == BT_CONN_LE_CS_ROLE_INITIATOR) {
+			mode_1_data[context->mode_1_data_index].toa_tod_initiator =
+				step_data->toa_tod_initiator;
+		} else if (context->role == BT_CONN_LE_CS_ROLE_REFLECTOR) {
+			mode_1_data[context->mode_1_data_index].tod_toa_reflector =
+				step_data->tod_toa_reflector;
 		}
 
 		context->mode_1_data_index++;
@@ -254,13 +224,74 @@ static bool process_step_data(struct bt_le_cs_subevent_step *step, void *user_da
 	return true;
 }
 
-void estimate_distance(uint8_t *local_steps, uint16_t local_steps_len, uint8_t *peer_steps,
-		       uint16_t peer_steps_len, uint8_t n_ap, enum bt_conn_le_cs_role role)
+static bool process_peer_step_data(struct ras_rd_cs_subevent_step *step, uint16_t *step_data_length, void *user_data)
 {
-	struct net_buf_simple buf;
+	struct processing_context *context = (struct processing_context *)user_data;
+	uint16_t step_data_len = 0;
 
+	if (step->mode == BT_CONN_LE_CS_MAIN_MODE_2) {
+		struct bt_hci_le_cs_step_data_mode_2 *step_data =
+			(struct bt_hci_le_cs_step_data_mode_2 *)step->data;
+		step_data_len = sizeof(struct bt_hci_le_cs_step_data_mode_2);
+		step_data_len += sizeof(struct bt_hci_le_cs_step_data_tone_info) * (context->n_ap + 1);
+
+		for (uint8_t i = 0; i < (context->n_ap + 1); i++) {
+			if (step_data->tone_info[i].extension_indicator !=
+					BT_HCI_LE_CS_NOT_TONE_EXT_SLOT) {
+				continue;
+			}
+
+			mode_2_data[context->mode_2_data_index].peer_iq_sample =
+				bt_le_cs_parse_pct(
+					step_data->tone_info[i].phase_correction_term);
+			if (step_data->tone_info[i].quality_indicator ==
+				    BT_HCI_LE_CS_TONE_QUALITY_LOW ||
+			    step_data->tone_info[i].quality_indicator ==
+				    BT_HCI_LE_CS_TONE_QUALITY_UNAVAILABLE) {
+				mode_2_data[context->mode_2_data_index].failed = true;
+			}
+
+			context->mode_2_data_index++;
+		}
+	} else if (step->mode == BT_HCI_OP_LE_CS_MAIN_MODE_1) {
+		struct bt_hci_le_cs_step_data_mode_1 *step_data =
+			(struct bt_hci_le_cs_step_data_mode_1 *)step->data;
+		step_data_len = sizeof(struct bt_hci_le_cs_step_data_mode_1);
+
+		if (step_data->packet_quality_aa_check !=
+			    BT_HCI_LE_CS_PACKET_QUALITY_AA_CHECK_SUCCESSFUL ||
+		    step_data->packet_rssi == BT_HCI_LE_CS_PACKET_RSSI_NOT_AVAILABLE ||
+		    step_data->tod_toa_reflector == BT_HCI_LE_CS_TIME_DIFFERENCE_NOT_AVAILABLE) {
+			mode_1_data[context->mode_1_data_index].failed = true;
+		}
+
+		if (context->role == BT_CONN_LE_CS_ROLE_INITIATOR) {
+			mode_1_data[context->mode_1_data_index].tod_toa_reflector =
+				step_data->tod_toa_reflector;
+		} else if (context->role == BT_CONN_LE_CS_ROLE_REFLECTOR) {
+			mode_1_data[context->mode_1_data_index].toa_tod_initiator =
+				step_data->toa_tod_initiator;
+		}
+
+		context->mode_1_data_index++;
+	} else if (step->mode == 0) {
+		if (context->role == BT_CONN_LE_CS_ROLE_INITIATOR)
+		{
+			step_data_len = sizeof(struct bt_hci_le_cs_step_data_mode_0_reflector);
+		} else {
+			step_data_len = sizeof(struct bt_hci_le_cs_step_data_mode_0_initiator);
+		}
+	}
+
+	*step_data_length = step_data_len;
+
+	return true;
+}
+
+void estimate_distance(struct net_buf_simple * local_steps, struct net_buf_simple * peer_steps,
+		       uint8_t n_ap, enum bt_conn_le_cs_role role)
+{
 	struct processing_context context = {
-		.local_steps = true,
 		.mode_1_data_index = 0,
 		.mode_2_data_index = 0,
 		.n_ap = n_ap,
@@ -270,17 +301,15 @@ void estimate_distance(uint8_t *local_steps, uint16_t local_steps_len, uint8_t *
 	memset(mode_1_data, 0, sizeof(mode_1_data));
 	memset(mode_2_data, 0, sizeof(mode_2_data));
 
-	net_buf_simple_init_with_data(&buf, local_steps, local_steps_len);
-
-	bt_le_cs_step_data_parse(&buf, process_step_data, &context);
+	bt_le_cs_step_data_parse(local_steps, process_local_step_data, &context);
 
 	context.mode_1_data_index = 0;
 	context.mode_2_data_index = 0;
-	context.local_steps = false;
 
-	net_buf_simple_init_with_data(&buf, peer_steps, peer_steps_len);
+	struct ras_ranging_header * rd_header = net_buf_simple_pull_mem(peer_steps, sizeof(struct ras_ranging_header));
+	(void)rd_header;
 
-	bt_le_cs_step_data_parse(&buf, process_step_data, &context);
+	bt_ras_rreq_rd_subevent_data_parse(peer_steps, NULL, process_peer_step_data, &context);
 
 	float phase_slope_based_distance =
 		estimate_distance_using_phase_slope(mode_2_data, context.mode_2_data_index);
