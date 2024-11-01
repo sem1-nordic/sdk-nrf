@@ -11,7 +11,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/check.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <bluetooth/services/ras.h>
 
 #include "ras_internal.h"
