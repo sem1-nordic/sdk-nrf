@@ -123,7 +123,7 @@ struct ras_rd_buffer {
 		struct {
 			struct ras_ranging_header ranging_header;
 			uint8_t subevents[];
-		};
+		} __packed;
 	} procedure;
 };
 
