@@ -57,7 +57,7 @@
     - sample.modules.lvgl.demo_widgets
     - sample.smf.smf_calculator
   platforms:
-    - native_sim
+    - native_sim/native
     - native_sim/native/64
   comment: "https://nordicsemi.atlassian.net/browse/NCSDK-24924"
 
@@ -193,15 +193,21 @@
     - net.sockets.tls13.psk_kex.tickets
     - net.sockets.tls13.ephemeral_kex.tickets
   platforms:
-    - native_sim
+    - native_sim/native
   comment: "https://nordicsemi.atlassian.net/browse/NCSDK-30873"
 
 - scenarios:
     - drivers.power_domain.build.pm
     - drivers.power_domain.build
   platforms:
-    - native_sim
+    - native_sim/native
   comment: "https://nordicsemi.atlassian.net/browse/NCSDK-30877"
+
+- scenarios:
+    - sample.mcumgr.smp_svr.ram_load.*
+  platforms:
+    - nrf52840dk/nrf52840
+  comment: "https://nordicsemi.atlassian.net/browse/NCSDK-24488"
 
 # ---------------------------------   Won't fix section -----------------------------------
 
